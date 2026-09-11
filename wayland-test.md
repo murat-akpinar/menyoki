@@ -171,7 +171,7 @@ Progress:
 - [x] 2. Recorded frames are thrown away if the window closes mid-recording
 - [x] 3. Resizing a window mid-recording produces a smeared band
 - [x] 4. `--select` is silently ignored
-- [ ] 5. Ctrl-C during the countdown reports an error
+- [x] 5. Ctrl-C during the countdown reports an error
 - [ ] 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
 
 2 is fixed before 3 on purpose: 3 turns a silent wrong crop into an error,
@@ -339,20 +339,42 @@ environment variable forms.
 
 ### 5. Ctrl-C during the countdown reports an error
 
-**Status:** todo
+**Status:** fixed
 
 **Finding:** interrupting during the countdown, before any frame is captured,
 exits 1 with `Frame error: No frames found to save` instead of reporting a
 cancelled recording.
 
-**Cause:** to be confirmed with the fix — the Ctrl-C handler is installed
-before `show_countdown()` (`src/record/mod.rs:121-124`), and an empty frame
-list reaches the encoder, which has no way to tell "cancelled" from "broken".
-The same applies to the cancel-key path, which clears the frames and breaks.
+**Cause:** the Ctrl-C handler is installed before `show_countdown()`, so an
+interrupt during the countdown leaves the loop with zero frames. An empty
+frame list is all the encoder gets, and it cannot tell "the user cancelled"
+from "the capture produced nothing", so it reports the latter. The cancel-key
+path had the same shape: it cleared the frames and broke out.
 
-**Fix:** to be filled in.
+**Fix:** cancelling is now its own outcome, `AppError::Cancelled`, returned
+by both paths — after the countdown when the interrupt already arrived, and
+in place of the cancel-key `frames.clear()`. `main` treats it as a normal
+end: `Cancelled.` on stdout, exit 0, no file. Everything else still exits 1.
 
-**Verification:** to be filled in.
+**Verification:**
+
+* `record --root --countdown 5 --duration 10`, `SIGINT` two seconds in:
+  `Cancelled.`, **exit 0**, no file (was: `Frame error: No frames found to
+  save`, exit 1).
+* Regression, interrupting an actual recording still saves it:
+  `record --root --countdown 0 --duration 10` with `SIGINT` two seconds in
+  writes 40 frames, exit 0.
+* `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
+  (37/37) all pass.
+
+Two remainders, both pre-existing and left alone:
+
+* The countdown itself is not interruptible — `show_countdown` sleeps a
+  second at a time without looking at the flag, so Ctrl-C is acted on when
+  the countdown ends, up to 99 seconds later. Making it interruptible means
+  changing the `Capture` trait, which `capture` shares.
+* The cancel-key path is X11 only (there is no input state on Wayland), so
+  its half of this fix is compiled but untested here.
 
 ### 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
 

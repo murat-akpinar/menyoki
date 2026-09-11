@@ -64,6 +64,9 @@ pub enum AppError {
 	FrameError(String),
 	#[error("Command error: `{0}`")]
 	CommandError(String),
+	/* Not a failure: the user stopped before there was anything to save. */
+	#[error("Cancelled.")]
+	Cancelled,
 }
 
 /* Application output and result types */

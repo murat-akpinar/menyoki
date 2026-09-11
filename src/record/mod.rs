@@ -121,14 +121,16 @@ where
 			rec_state.store(false, Ordering::SeqCst);
 		})?;
 		self.window.show_countdown();
+		if !recording.load(Ordering::SeqCst) {
+			return Err(AppError::Cancelled);
+		}
 		let max_frames = self.get_max_frames();
 		while recording.load(Ordering::SeqCst) && frames.len() < max_frames {
 			if let Some(state) = input_state {
 				if state.check_cancel_keys() {
-					frames.clear();
 					debug!("\n");
 					warn!("User interrupt detected.");
-					break;
+					return Err(AppError::Cancelled);
 				} else if state.check_action() {
 					break;
 				}

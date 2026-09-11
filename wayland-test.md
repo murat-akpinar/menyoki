@@ -170,7 +170,7 @@ Progress:
 - [x] 1. Capture can hang forever when the window disappears mid-copy
 - [x] 2. Recorded frames are thrown away if the window closes mid-recording
 - [x] 3. Resizing a window mid-recording produces a smeared band
-- [ ] 4. `--select` is silently ignored
+- [x] 4. `--select` is silently ignored
 - [ ] 5. Ctrl-C during the countdown reports an error
 - [ ] 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
 
@@ -307,17 +307,35 @@ x=500 of the last frame is compared against its own row averages:
 
 ### 4. `--select` is silently ignored
 
-**Status:** todo
+**Status:** fixed
 
 **Finding:** `--mouse` warns that it is unsupported on Wayland, `--select`
 says nothing and silently captures the whole output or the focused window.
 
-**Cause:** to be confirmed with the fix — `get_window`
-(`src/wayland/mod.rs:54`) only warns for `flag.mouse`.
+**Cause:** `get_window` only warned for `flag.mouse`. The obvious mirror of
+that, `if flag.select`, is wrong: unlike `flag.mouse`, which is exactly
+`--mouse`, `RecordFlag::select` defaults to **true** and only follows the
+argument when `--size` carries a full `WxH+X+Y` geometry. It means "the area
+is not pinned down, so interactive selection and the border apply", and
+warning on it fires on nearly every Wayland run — which is what a first
+attempt at this fix did.
 
-**Fix:** to be filled in.
+**Fix:** a `has_arg` helper reads the argument of the running subcommand
+through `ArgParser::from_subcommand`, the same way `RecordSettings` does, so
+the warning follows `--select` itself, including its config file and
+environment variable forms.
 
-**Verification:** to be filled in.
+**Verification:**
+
+| command | warning |
+|---|---|
+| `capture --root --select` | `Selecting a window interactively is not supported on Wayland.` |
+| `capture --root` | none |
+| `capture --root --mouse` | the existing mouse warning, unchanged |
+| `record --root --select ...` | the select warning, next to the action keys one |
+
+`cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
+(37/37) all pass.
 
 ### 5. Ctrl-C during the countdown reports an error
 

@@ -158,16 +158,129 @@ No hardware for these here — worth checking before claiming they work:
   wlr-screencopy, `--focus` should print the "this compositor does not allow
   capturing an individual window" error. Untested.
 
-## Fix plan (one PR)
+## Fix roadmap
 
-| # | Issue | Where | Change |
-|---|-------|-------|--------|
-| 1 | Unbounded wait can hang | `src/wayland/display.rs:464` (`copy_frame`) | Bound the `blocking_dispatch` loop with a deadline; on timeout return the existing `Err` instead of blocking. `Connection::prepare_read` + `poll` with a timeout, or a wall-clock check per iteration. |
-| 2 | Frames lost when the window closes mid-recording | `src/record/mod.rs:138` (`record_sync`), `:163` (`record_async`) | On `get_image()` failure, break out with the frames collected so far instead of propagating `FrameError`; warn that the recording ended early. Keep the error when no frames exist. |
-| 3 | Smeared band after a mid-recording resize | `src/wayland/display.rs:565` (`get_pixels`), area fixed in `src/wayland/mod.rs:52` | Detect that the frame buffer no longer covers `area` (`info.width`/`info.height` shrank) and stop the recording with a clear message rather than clamping silently. |
-| 4 | `--select` silently ignored | `src/wayland/mod.rs:54` | Warn for `flag.select` next to the existing `flag.mouse` warning, matching the README. |
-| 5 | Ctrl-C during the countdown reports an error | `src/record/mod.rs:121-124` | The handler is installed before `show_countdown()`; if the interrupt arrives before the first frame, exit cleanly ("recording cancelled") instead of `No frames found to save`. |
-| 6 | X11 backend panics with no `DISPLAY` | X11 backend (`src/x11/display.rs`) | Turn the `Could not connect to a X display` panic into a normal error exit; it is reachable from a Wayland session via `MENYOKI_WINDOW_SYSTEM=x11`. |
+Branch: `fix/wayland-issues`. One finding per commit, each one built, unit
+tested (`cargo test`) and re-checked against the live compositor before the
+next one is started. Every entry below is filled in with its cause and the
+fix that was applied as it lands.
 
-Issues 1-5 are in the Wayland backend; 6 is pre-existing X11 behaviour and can
-be split out if upstream prefers a narrower PR.
+Progress:
+
+- [ ] 1. Capture can hang forever when the window disappears mid-copy
+- [ ] 2. Recorded frames are thrown away if the window closes mid-recording
+- [ ] 3. Resizing a window mid-recording produces a smeared band
+- [ ] 4. `--select` is silently ignored
+- [ ] 5. Ctrl-C during the countdown reports an error
+- [ ] 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
+
+2 is fixed before 3 on purpose: 3 turns a silent wrong crop into an error,
+and 2 is what keeps that error from throwing the recording away.
+
+### 1. Capture can hang forever when the window disappears mid-copy
+
+**Status:** todo
+
+**Finding:** a `capture --focus` of a window that was closing blocked in
+`ppoll` on the Wayland socket for 8+ minutes instead of failing.
+
+**Cause:** to be confirmed with the fix — `copy_frame`
+(`src/wayland/display.rs:464`) waits for `Ready`/`Failed` in
+`while state.frame_status == FrameStatus::Pending { queue.blocking_dispatch(state)?; }`,
+which has no deadline, so a frame the compositor never answers for blocks
+forever. The `record` path uses the same loop.
+
+**Fix:** to be filled in.
+
+**Verification:** to be filled in.
+
+### 2. Recorded frames are thrown away if the window closes mid-recording
+
+**Status:** todo
+
+**Finding:** closing the window during `record --focus` exits 1 with
+`Frame error: Failed to get image` and writes no file; every frame captured
+until then is lost.
+
+**Cause:** to be confirmed with the fix — `record_sync`
+(`src/record/mod.rs:138`) turns a `None` frame into `AppError::FrameError`
+and returns, dropping the frames it already holds; `record_async`
+(`:166`) panics through `expect` instead.
+
+**Fix:** to be filled in.
+
+**Verification:** to be filled in.
+
+### 3. Resizing a window mid-recording produces a smeared band
+
+**Status:** todo
+
+**Finding:** after shrinking an 800x600 window to 500x400 mid-recording, the
+region past the new window edge became a repeated edge column for the rest of
+the recording (standard deviation 0 across columns 500-799).
+
+**Cause:** to be confirmed with the fix — the capture area is fixed when
+recording starts, and `get_pixels` (`src/wayland/display.rs:565`) clamps
+out-of-range rows and columns to the last pixel instead of reporting that the
+frame no longer covers the area.
+
+**Fix:** to be filled in.
+
+**Verification:** to be filled in.
+
+### 4. `--select` is silently ignored
+
+**Status:** todo
+
+**Finding:** `--mouse` warns that it is unsupported on Wayland, `--select`
+says nothing and silently captures the whole output or the focused window.
+
+**Cause:** to be confirmed with the fix — `get_window`
+(`src/wayland/mod.rs:54`) only warns for `flag.mouse`.
+
+**Fix:** to be filled in.
+
+**Verification:** to be filled in.
+
+### 5. Ctrl-C during the countdown reports an error
+
+**Status:** todo
+
+**Finding:** interrupting during the countdown, before any frame is captured,
+exits 1 with `Frame error: No frames found to save` instead of reporting a
+cancelled recording.
+
+**Cause:** to be confirmed with the fix — the Ctrl-C handler is installed
+before `show_countdown()` (`src/record/mod.rs:121-124`), and an empty frame
+list reaches the encoder, which has no way to tell "cancelled" from "broken".
+The same applies to the cancel-key path, which clears the frames and breaks.
+
+**Fix:** to be filled in.
+
+**Verification:** to be filled in.
+
+### 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
+
+**Status:** todo
+
+**Finding:** with no `DISPLAY`, forcing the X11 backend aborts with
+`Could not connect to a X display` and dumps core instead of exiting with an
+error. The Wayland docs point users at that variable for XWayland windows, so
+it is reachable from a Wayland session.
+
+**Cause:** to be confirmed with the fix — not the X11 backend itself:
+`x11::display::Display::open` already returns `None` and is handled. The
+panic is in `DeviceState::new()` (`device_query`, no `checked_new` on Linux),
+called from `InputState::new` via `AppSettings::get_input_state`
+(`src/settings.rs:131`) before any window system is touched.
+
+**Fix:** to be filled in.
+
+**Verification:** to be filled in.
+
+### Still not covered by this work
+
+Multi-monitor, fractional scaling and rotated outputs, and non-Hyprland
+wlroots compositors stay untested — no hardware here. Fix 3 does change what
+a rotated output does: a frame that does not cover the requested area becomes
+an error instead of a silently wrong crop.

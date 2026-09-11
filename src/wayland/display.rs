@@ -10,7 +10,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
@@ -45,6 +46,10 @@ const TOPLEVEL_VERSION: u32 = 3;
 const TOPLEVEL_EXPORT_VERSION: u32 = 2;
 /* Number of bytes that a single pixel occupies in a shm buffer */
 const PIXEL_SIZE: u32 = 4;
+/* Time to wait for the compositor to copy a frame */
+const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+/* Time to wait between two checks of an unfinished frame copy */
+const FRAME_CHECK_INTERVAL: Duration = Duration::from_millis(1);
 
 /* Thing to capture the frames of */
 #[derive(Clone, Copy, Debug)]
@@ -461,10 +466,20 @@ impl Display {
 		/* The buffer is kept around for the next frame, so it is put back
 		 * before anything else can fail. */
 		*buffer = Some(shm_buffer);
+		let deadline = Instant::now() + FRAME_TIMEOUT;
 		while state.frame_status == FrameStatus::Pending {
+			if Instant::now() >= deadline {
+				return Err(String::from("The compositor did not send the frame"));
+			}
+			/* ponytail: a roundtrip returns as soon as the compositor answers
+			 * a sync, which keeps the deadline reachable without polling the
+			 * socket; use prepare_read + poll if the waiting ever shows up. */
 			queue
-				.blocking_dispatch(state)
+				.roundtrip(state)
 				.map_err(|e| format!("Wayland communication failed: {e}"))?;
+			if state.frame_status == FrameStatus::Pending {
+				thread::sleep(FRAME_CHECK_INTERVAL);
+			}
 		}
 		if state.frame_status == FrameStatus::Failed {
 			return Err(String::from("The compositor rejected the copy request"));

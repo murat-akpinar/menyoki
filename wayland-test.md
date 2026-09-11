@@ -167,7 +167,7 @@ fix that was applied as it lands.
 
 Progress:
 
-- [ ] 1. Capture can hang forever when the window disappears mid-copy
+- [x] 1. Capture can hang forever when the window disappears mid-copy
 - [ ] 2. Recorded frames are thrown away if the window closes mid-recording
 - [ ] 3. Resizing a window mid-recording produces a smeared band
 - [ ] 4. `--select` is silently ignored
@@ -179,20 +179,43 @@ and 2 is what keeps that error from throwing the recording away.
 
 ### 1. Capture can hang forever when the window disappears mid-copy
 
-**Status:** todo
+**Status:** fixed
 
 **Finding:** a `capture --focus` of a window that was closing blocked in
 `ppoll` on the Wayland socket for 8+ minutes instead of failing.
 
-**Cause:** to be confirmed with the fix — `copy_frame`
-(`src/wayland/display.rs:464`) waits for `Ready`/`Failed` in
-`while state.frame_status == FrameStatus::Pending { queue.blocking_dispatch(state)?; }`,
-which has no deadline, so a frame the compositor never answers for blocks
-forever. The `record` path uses the same loop.
+**Cause:** `copy_frame` (`src/wayland/display.rs`) waited for `Ready`/`Failed`
+in `while state.frame_status == FrameStatus::Pending { queue.blocking_dispatch(state)?; }`.
+`blocking_dispatch` blocks until the compositor sends *something*, and the
+loop has no deadline, so a frame that is never answered for — the toplevel
+was destroyed while the copy was in flight — blocks forever. `record` uses
+the same loop, so a recording can hang the same way.
 
-**Fix:** to be filled in.
+**Fix:** the wait is bounded by a 5 second deadline (`FRAME_TIMEOUT`). The
+loop now uses `queue.roundtrip()` instead of `blocking_dispatch()`: a
+roundtrip returns as soon as the compositor answers a `wl_display.sync`,
+which makes the deadline check reachable, and the frame events that arrive in
+the meantime are dispatched exactly as before. A 1 ms sleep
+(`FRAME_CHECK_INTERVAL`) between the checks keeps an unanswered frame from
+spinning the CPU. On timeout the existing error path is taken, so menyoki
+exits 1 with `The compositor did not send the frame` instead of blocking.
 
-**Verification:** to be filled in.
+Polling the socket with `prepare_read` + `poll` would avoid the 1 ms
+granularity, but it needs a direct `rustix`/`libc` dependency; that is noted
+as the upgrade path in the code.
+
+**Verification:**
+
+* `capture --root` still **RMSE 0 vs grim**, 0.06 s end to end (no added
+  latency from the sleep).
+* `record --root --duration 2` still 40 frames, 1920x1080.
+* 20 close-during-capture attempts (alternating `closewindow` and `kill -9`,
+  0-140 ms after the capture starts): 20 exits, 0 hangs.
+* Deadline branch exercised directly by building with `FRAME_TIMEOUT` set to
+  0 s: the capture fails in 3 ms with `The compositor did not send the frame`
+  and exit 1, where the old code would have blocked.
+* `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
+  (36/36) all pass.
 
 ### 2. Recorded frames are thrown away if the window closes mid-recording
 

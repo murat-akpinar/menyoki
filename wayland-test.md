@@ -172,7 +172,7 @@ Progress:
 - [x] 3. Resizing a window mid-recording produces a smeared band
 - [x] 4. `--select` is silently ignored
 - [x] 5. Ctrl-C during the countdown reports an error
-- [ ] 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
+- [x] 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
 
 2 is fixed before 3 on purpose: 3 turns a silent wrong crop into an error,
 and 2 is what keeps that error from throwing the recording away.
@@ -378,22 +378,42 @@ Two remainders, both pre-existing and left alone:
 
 ### 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
 
-**Status:** todo
+**Status:** fixed
 
 **Finding:** with no `DISPLAY`, forcing the X11 backend aborts with
 `Could not connect to a X display` and dumps core instead of exiting with an
 error. The Wayland docs point users at that variable for XWayland windows, so
 it is reachable from a Wayland session.
 
-**Cause:** to be confirmed with the fix — not the X11 backend itself:
-`x11::display::Display::open` already returns `None` and is handled. The
-panic is in `DeviceState::new()` (`device_query`, no `checked_new` on Linux),
-called from `InputState::new` via `AppSettings::get_input_state`
-(`src/settings.rs:131`) before any window system is touched.
+**Cause:** not the X11 backend, which the report guessed:
+`x11::display::Display::open` already returns `None` and `WindowSystem::init`
+already reports it. The panic comes earlier, from `DeviceState::new()` in
+`device_query` — on Linux it opens an X display and `panic!`s if it cannot,
+and its `checked_new` counterpart exists only on macOS.
+`AppSettings::get_input_state` calls it while the settings are still being
+built, before any window system is chosen.
 
-**Fix:** to be filled in.
+**Fix:** `x11::has_display()` opens and closes a display to answer the
+question `device_query` refuses to, and the input state is only built when it
+says yes. Without a display the run reaches the X11 backend and exits through
+its existing `Cannot open display.` path. The check is behind `&&` after
+`window_required` and `!is_wayland()`, so it costs nothing for a Wayland
+session or for a subcommand that needs no window.
 
-**Verification:** to be filled in.
+**Verification:** `MENYOKI_WINDOW_SYSTEM=x11 capture --root` with no
+`DISPLAY`:
+
+| | output | exit |
+|---|---|---|
+| before | `Could not connect to a X display`, **core dumped** | 134 |
+| after | `Cannot open display.` + `Failed to access the window system.` | 1 |
+
+* With XWayland (`DISPLAY=:1`) the input state is still built and the run
+  goes on to the X11 backend, which fails at `BadMatch` on the rootless
+  XWayland root window — identical before and after this change, so it is
+  pre-existing and out of scope here.
+* `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
+  (37/37) all pass.
 
 ### Still not covered by this work
 

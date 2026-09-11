@@ -453,6 +453,22 @@ impl Display {
 		{
 			return Err(String::from("Invalid buffer geometry"));
 		}
+		/* The area is fixed when the capture starts, so a window that is
+		 * resized while it is recorded stops being covered by its frames. */
+		if u32::try_from(area.x)
+			.unwrap_or_default()
+			.saturating_add(area.width)
+			> info.width
+			|| u32::try_from(area.y)
+				.unwrap_or_default()
+				.saturating_add(area.height)
+				> info.height
+		{
+			return Err(format!(
+				"The capture area ({}x{} at {},{}) does not fit in the frame ({}x{})",
+				area.width, area.height, area.x, area.y, info.width, info.height
+			));
+		}
 		let shm_buffer = match buffer.take() {
 			Some(shm_buffer) if shm_buffer.info == info => shm_buffer,
 			previous => {
@@ -594,10 +610,10 @@ impl Display {
 				.unwrap_or_default(),
 		);
 		for y in 0..area.height {
-			let row = y_offset.saturating_add(y).min(info.height - 1);
+			let row = y_offset.saturating_add(y);
 			let row = if y_invert { info.height - 1 - row } else { row };
 			for x in 0..area.width {
-				let column = x_offset.saturating_add(x).min(info.width - 1);
+				let column = x_offset.saturating_add(x);
 				let offset =
 					usize::try_from(row * info.stride + column * PIXEL_SIZE)
 						.unwrap_or_default();
@@ -880,3 +896,35 @@ delegate_noop!(State: ignore HyprlandToplevelExportManagerV1);
 delegate_noop!(State: ignore WlShmPool);
 delegate_noop!(State: ignore WlBuffer);
 delegate_noop!(State: ignore ZwlrScreencopyManagerV1);
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use pretty_assertions::assert_eq;
+	#[test]
+	fn test_get_pixels() {
+		let info = FrameInfo {
+			format: wl_shm::Format::Xrgb8888,
+			width: 2,
+			height: 2,
+			stride: 8,
+		};
+		/* Two rows of two BGRX pixels: (1,2,3) (4,5,6) / (7,8,9) (10,11,12) */
+		#[rustfmt::skip]
+		let data = [
+			3, 2, 1, 255, 6, 5, 4, 255,
+			9, 8, 7, 255, 12, 11, 10, 255,
+		];
+		/* The right hand column of the frame, top to bottom */
+		let area = Geometry::new(1, 0, 1, 2);
+		assert_eq!(
+			vec![Rgba::from([4, 5, 6, 255]), Rgba::from([10, 11, 12, 255])],
+			Display::get_pixels(&data, info, area, false)
+		);
+		/* The same area, read from the bottom up */
+		assert_eq!(
+			vec![Rgba::from([10, 11, 12, 255]), Rgba::from([4, 5, 6, 255])],
+			Display::get_pixels(&data, info, area, true)
+		);
+	}
+}

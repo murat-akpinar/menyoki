@@ -169,7 +169,7 @@ Progress:
 
 - [x] 1. Capture can hang forever when the window disappears mid-copy
 - [x] 2. Recorded frames are thrown away if the window closes mid-recording
-- [ ] 3. Resizing a window mid-recording produces a smeared band
+- [x] 3. Resizing a window mid-recording produces a smeared band
 - [ ] 4. `--select` is silently ignored
 - [ ] 5. Ctrl-C during the countdown reports an error
 - [ ] 6. `MENYOKI_WINDOW_SYSTEM=x11` with no X display panics
@@ -262,20 +262,48 @@ default 3 s countdown) records nothing and exits with
 
 ### 3. Resizing a window mid-recording produces a smeared band
 
-**Status:** todo
+**Status:** fixed
 
 **Finding:** after shrinking an 800x600 window to 500x400 mid-recording, the
 region past the new window edge became a repeated edge column for the rest of
 the recording (standard deviation 0 across columns 500-799).
 
-**Cause:** to be confirmed with the fix — the capture area is fixed when
-recording starts, and `get_pixels` (`src/wayland/display.rs:565`) clamps
-out-of-range rows and columns to the last pixel instead of reporting that the
-frame no longer covers the area.
+**Cause:** the capture area is fixed when the recording starts, but the
+frames the compositor hands over shrink with the window. `get_pixels`
+clamped every out-of-range row and column to the last pixel of the buffer
+(`.min(info.width - 1)`, `.min(info.height - 1)`), which turns "this frame is
+too small" into "repeat the edge pixel", silently, for every remaining frame.
 
-**Fix:** to be filled in.
+**Fix:** `copy_frame` now rejects a frame that does not cover the requested
+area, with
+`The capture area (800x600 at 0,0) does not fit in the frame (759x573)`.
+Combined with fix 2, the recording ends there and keeps its frames instead of
+filling them with smear. The two `.min()` clamps in `get_pixels` are gone —
+the guard makes every coordinate in range by construction, so clamping could
+only hide the next bug of this kind.
 
-**Verification:** to be filled in.
+This also changes what a rotated output does: `wl_output.mode` reports the
+untransformed mode while the screencopy buffer is transformed, so a
+`transform != 0` output now fails with the message above instead of writing a
+wrongly cropped image. Untested here, no rotated output on this machine.
+
+**Verification:** 800x600 window recorded with
+`record --focus --countdown 0 --duration 10`, resized to 500x400 three
+seconds in, running `base64 /dev/urandom` so the content varies across the
+full width. A smeared band is constant along every row, so the band past
+x=500 of the last frame is compared against its own row averages:
+
+| | frames | band vs row averages | |
+|---|---|---|---|
+| before (fixes 1-2 only) | 200 (full 10 s) | **RMSE 0** | smeared |
+| after | 59 (stops at the resize) | RMSE 0.172 | real content |
+
+* `capture --root` still RMSE 0 vs grim, `capture --focus` unaffected: an
+  area that fits is never rejected.
+* New unit test `wayland::display::tests::test_get_pixels` covers the pixel
+  math the clamps were part of — channel order and the `y_invert` flip.
+* `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
+  (37/37) all pass.
 
 ### 4. `--select` is silently ignored
 

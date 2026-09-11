@@ -415,6 +415,20 @@ session or for a subcommand that needs no window.
 * `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
   (37/37) all pass.
 
+### Regression sweep after all six fixes
+
+Re-run on the same machine with the final binary, Hyprland 0.56.2:
+
+| check | result |
+|---|---|
+| `capture --root` vs grim | RMSE 0 |
+| `--size 800x600` / `--padding 100:200:300:400` | 800x600 / 1320x680 |
+| `--with-alpha`, `--monitor 1`, `--monitor 2` | RGBA, 1920x1080, exit 1 |
+| `capture --focus` (+ `--size`, `--padding`, `--with-alpha`) | 800x600, 400x300, 740x560, RGBA |
+| `capture --focus` to jpg / webp / bmp / tiff | all 320x240 |
+| `record --focus --duration 2` gif / apng | 40 frames each, 800x600 |
+| `record --root --duration 2` with `gif --gifski` | 28 frames (gifski collapses duplicates on a static screen) |
+
 ### Still not covered by this work
 
 Multi-monitor, fractional scaling and rotated outputs, and non-Hyprland

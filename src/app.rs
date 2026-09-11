@@ -260,10 +260,7 @@ where
 					))
 				})?
 				.execute()?;
-			Ok(match record.get() {
-				Some(frames) => frames.expect("Failed to retrieve the frames."),
-				None => Vec::new(),
-			})
+			Ok(record.get().expect("Failed to retrieve the frames."))
 		} else {
 			Ok(recorder.record_sync(
 				if self.settings.record.flag.action_keys.is_some() {

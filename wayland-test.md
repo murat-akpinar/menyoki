@@ -168,7 +168,7 @@ fix that was applied as it lands.
 Progress:
 
 - [x] 1. Capture can hang forever when the window disappears mid-copy
-- [ ] 2. Recorded frames are thrown away if the window closes mid-recording
+- [x] 2. Recorded frames are thrown away if the window closes mid-recording
 - [ ] 3. Resizing a window mid-recording produces a smeared band
 - [ ] 4. `--select` is silently ignored
 - [ ] 5. Ctrl-C during the countdown reports an error
@@ -219,20 +219,46 @@ as the upgrade path in the code.
 
 ### 2. Recorded frames are thrown away if the window closes mid-recording
 
-**Status:** todo
+**Status:** fixed
 
 **Finding:** closing the window during `record --focus` exits 1 with
 `Frame error: Failed to get image` and writes no file; every frame captured
 until then is lost.
 
-**Cause:** to be confirmed with the fix — `record_sync`
-(`src/record/mod.rs:138`) turns a `None` frame into `AppError::FrameError`
-and returns, dropping the frames it already holds; `record_async`
-(`:166`) panics through `expect` instead.
+**Cause:** three places dropped the frames on the floor. `record_sync` turned
+a `None` frame into `AppError::FrameError` and returned, discarding the
+frames it already held. `record_async` panicked through
+`expect("Failed to get the image")` instead. And `RecordResult::get` only
+joined the recording thread when its stop message was delivered — a thread
+that had already finished on its own has dropped the receiver, so the send
+failed, `get` returned `None`, and the caller substituted an empty frame
+list. Any one of the three was enough to lose the recording.
 
-**Fix:** to be filled in.
+**Fix:** a failed frame now ends the recording instead of failing it: both
+loops warn `The recording ended early.` and break, keeping what they have.
+`record_sync` still returns the original error when the *first* frame fails,
+since there is nothing to save then. `RecordResult::get` always joins and
+returns `thread::Result<T>` — the `Option` only encoded the case that lost
+the frames, so it is gone, along with the `None` arm in `App::record`.
 
-**Verification:** to be filled in.
+**Verification:**
+
+* `record --focus --duration 10`, window killed ~3 s in: **60 frames saved,
+  exit 0** (was: no file, exit 1).
+* Same run with the window killed during the countdown, before any frame:
+  still `Frame error: Failed to get image`, exit 1, no file — as intended.
+* Async path, `record --focus --countdown 0 'sleep 8'` with the window killed
+  ~3 s in: **59 frames saved, exit 0** (was: panic in the recording thread,
+  frames replaced by an empty list).
+* Regression, async path unharmed: `record --root --countdown 0 'sleep 2'`
+  still 40 frames, 1920x1080, exit 0.
+* `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
+  (36/36) all pass.
+
+Noticed while testing, not a regression and not fixed here: a COMMAND that
+finishes before the countdown does (`record --root 'sleep 2'` with the
+default 3 s countdown) records nothing and exits with
+`No frames found to save`. It behaves the same way before this branch.
 
 ### 3. Resizing a window mid-recording produces a smeared band
 

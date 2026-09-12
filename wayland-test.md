@@ -144,16 +144,19 @@ session with no `DISPLAY`.
 
 ## Not covered
 
-No hardware for these here — worth checking before claiming they work:
+No hardware for these at the time of the report. Most of them were reached
+later with virtual outputs and a nested compositor — see "Covered afterwards"
+at the end, which also corrects the guess about rotated outputs below.
 
 * **Multi-monitor**: only one output exists on this machine, so `--monitor 2+`,
   the "N outputs found, capturing the first one" warning and per-output
   geometry were only exercised in their error paths.
 * **Fractional scaling** (`scale != 1`) and **rotated outputs**
   (`transform != 0`): output geometry comes from `wl_output.mode`, which is the
-  physical mode size. On a rotated output the screencopy buffer has width and
-  height swapped; `get_pixels` clamps instead of erroring, so the crop would be
-  wrong rather than refused. Untested.
+  physical mode size. Untested. (Measured later: scaling is fine, and the
+  screencopy buffer of a rotated output is *not* swapped — it stays in the
+  physical mode size, so nothing is cropped wrongly; the image simply comes
+  out without the output transform applied.)
 * **Non-Hyprland wlroots compositors** (Sway, river): `--root` should work via
   wlr-screencopy, `--focus` should print the "this compositor does not allow
   capturing an individual window" error. Untested.
@@ -214,8 +217,28 @@ as the upgrade path in the code.
 * Deadline branch exercised directly by building with `FRAME_TIMEOUT` set to
   0 s: the capture fails in 3 ms with `The compositor did not send the frame`
   and exit 1, where the old code would have blocked.
+* 40 close-during-recording attempts against a **nested Hyprland** (the
+  window killed at a random point inside the recording), run twice with the
+  same loop — once with the v1.8.0 binary built from `master` (1183d7e),
+  once with this branch:
+
+  | binary | hangs | outcome |
+  |---|---|---|
+  | `master` 1183d7e | **5/40** | killed at the 25 s cap (`rc=137`), frames lost |
+  | this branch | **0/40** | 9/40 reached the deadline at 5.4-6.0 s with `The compositor did not send the frame`, kept their frames, exit 0 |
+
+  This is the reported hang, reproduced on demand instead of by accident: one
+  run in eight blocks forever without the deadline.
 * `cargo fmt --check`, `cargo clippy --tests -- -D warnings`, `cargo test`
   (36/36) all pass.
+
+**Known limit:** the deadline is only checked between roundtrips, so it bounds
+a compositor that keeps answering syncs but never sends the frame — the
+reported failure. A compositor that stops answering at all still blocks: with
+the nested Hyprland `SIGSTOP`ped two seconds into a recording, menyoki was
+still alive 30 seconds later and had to be killed. `master` behaves the same
+way, so this is not a regression, only a case the fix does not reach.
+`prepare_read` + `poll` is the upgrade path noted in the code.
 
 ### 2. Recorded frames are thrown away if the window closes mid-recording
 
@@ -282,10 +305,15 @@ filling them with smear. The two `.min()` clamps in `get_pixels` are gone —
 the guard makes every coordinate in range by construction, so clamping could
 only hide the next bug of this kind.
 
-This also changes what a rotated output does: `wl_output.mode` reports the
-untransformed mode while the screencopy buffer is transformed, so a
-`transform != 0` output now fails with the message above instead of writing a
-wrongly cropped image. Untested here, no rotated output on this machine.
+This does **not** change what a rotated output does, although an earlier draft
+of this report predicted that it would. Measured afterwards on a rotated
+virtual output (`transform 1`): wlr-screencopy hands over a buffer in the
+output's physical mode size, which is the same size the capture area is
+derived from, so the new guard never fires. menyoki writes a 1920x1080 image
+where grim writes 1080x1920, and rotating menyoki's output by 90° matches
+grim (RMSE 0.009) — menyoki does not apply the output transform, on this
+branch or on `master`, and the image comes out sideways with no warning. A
+separate bug, out of scope here.
 
 **Verification:** 800x600 window recorded with
 `record --focus --countdown 0 --duration 10`, resized to 500x400 three
@@ -429,9 +457,40 @@ Re-run on the same machine with the final binary, Hyprland 0.56.2:
 | `record --focus --duration 2` gif / apng | 40 frames each, 800x600 |
 | `record --root --duration 2` with `gif --gifski` | 28 frames (gifski collapses duplicates on a static screen) |
 
-### Still not covered by this work
+### Covered afterwards, without extra hardware
 
-Multi-monitor, fractional scaling and rotated outputs, and non-Hyprland
-wlroots compositors stay untested — no hardware here. Fix 3 does change what
-a rotated output does: a frame that does not cover the requested area becomes
-an error instead of a silently wrong crop.
+Most of the "no hardware here" list turned out to be reachable from the same
+machine: `hyprctl output create headless` adds a second output that can be
+rotated and scaled, and Hyprland runs nested inside itself, which gives a
+compositor that can be killed or frozen without touching the session. All of
+the following ran against the branch binary (83f43fd) on Hyprland 0.56.2:
+
+| check | result |
+|---|---|
+| `--root` with two outputs | `2 outputs found, capturing the first one.` |
+| `--monitor 1` / `--monitor 2` | 1920x1080 / 1920x1080 |
+| `--monitor 3` | `Invalid monitor number: 3 (found 2 outputs)`, exit 1 |
+| output at `scale 1.5` | RMSE 0.003 vs grim — fractional scaling is fine |
+| output at `transform 1` | 1920x1080 where grim writes 1080x1920, see fix 3 |
+| resize mid-recording, real window | 50 frames kept, `does not fit in the frame (1050x700)`, exit 0 |
+| resize before the first frame | `Frame error: Failed to get image`, exit 1 |
+| `SIGINT` during the countdown | `Cancelled.`, exit 0, no file written |
+| `SIGINT` during the recording | 40 frames written, exit 0 |
+| 40 close-during-recording runs, branch vs `master` | 0/40 vs 5/40 hangs, see fix 1 |
+
+### Still not covered
+
+* **Real multi-monitor hardware**: a headless output has no physical mode
+  list, no DPMS and no mixed refresh rates, so only output enumeration,
+  selection and per-output geometry were exercised.
+* **Non-Hyprland wlroots compositors** (Sway, river): not installed on this
+  machine. `--root` should work via wlr-screencopy, `--focus` should print the
+  "this compositor does not allow capturing an individual window" error.
+  Untested.
+* **The cancel-key half of fix 5**: the input state is backed by X11, so it
+  needs an X display and synthetic key events to exercise. It compiles and is
+  wired up, but it has never been run. The `SIGINT` half above is what was
+  tested.
+* **A compositor that stops answering entirely**: still an unbounded wait, see
+  the known limit under fix 1.
+* **Rotated outputs produce a sideways image**: confirmed, not fixed here.
